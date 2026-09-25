@@ -1,20 +1,21 @@
 # Bootstraps a machine from a config repo built on top of nixos-framework:
-# clones the config, then applies its NixOS and home-manager configurations.
+# applies its NixOS and home-manager configurations straight from the flake,
+# without cloning it (the config can clone itself, see framework.checkouts).
 
 usage() {
   cat <<USAGE
-Usage: nix run github:${FRAMEWORK_REPO} -- [options] <config-repo> <host>
+Usage: nix run github:${FRAMEWORK_REPO} -- [options] <config> <host>
 
-Clones <config-repo> into the config directory, then applies the
-nixosConfigurations.<host> and homeConfigurations.<host> outputs of its flake.
+Applies the nixosConfigurations.<host> and homeConfigurations.<host> outputs
+of <config>'s flake.
 
 Arguments:
-  <config-repo>  GitHub "owner/repo", or any git URL / local path
-  <host>         Name of the host outputs to apply
+  <config>  GitHub "owner/repo", or any flake ref (e.g. path:/some/checkout)
+  <host>    Name of the host outputs to apply
 
 Options:
-  -b, --branch <name>  Branch to clone (default: the repo's default branch)
-  -d, --dir <path>     Clone destination (default: ~/.nixos-config)
+  -b, --branch <name>  Branch of an "owner/repo" config (default: the repo's
+                       default branch)
   -f, --framework <flake-ref>
                        Use this framework instead of the config's locked one,
                        e.g. path:/home/me/git/nixos-framework or
@@ -24,16 +25,15 @@ USAGE
 }
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 branch=""
-dir="$HOME/.nixos-config"
 framework=""
 positional=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -b|--branch) branch="${2:?--branch requires a value}"; shift 2 ;;
-    -d|--dir) dir="${2:?--dir requires a value}"; shift 2 ;;
     -f|--framework) framework="${2:?--framework requires a value}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     -*) usage >&2; die "unknown option: $1" ;;
@@ -41,18 +41,20 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ ${#positional[@]} -eq 2 ]] || { usage >&2; exit 1; }
-repo="${positional[0]}"
+config="${positional[0]}"
 host="${positional[1]}"
 
 [[ $EUID -ne 0 ]] || die "run as your regular user, not root (sudo is used where needed)"
 
-# Resolve the clone URL. Only GitHub "owner/repo" slugs get the auth fallback.
+# Resolve the flake ref. Only GitHub "owner/repo" slugs get the auth fallback.
 github_slug=""
-case "$repo" in
-  *://*|git@*|/*|./*|../*|~*) url="$repo" ;;
-  */*) github_slug="$repo"; url="https://github.com/$repo.git" ;;
-  *) die "config repo must be \"owner/repo\", a git URL or a path: $repo" ;;
-esac
+if [[ $config =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+  github_slug="$config"
+  flake="github:$config${branch:+/$branch}"
+else
+  [[ -z $branch ]] || die "--branch only applies to an \"owner/repo\" config"
+  flake="$config"
+fi
 
 can_read() { GIT_TERMINAL_PROMPT=0 git ls-remote "$1" HEAD >/dev/null 2>&1; }
 
@@ -74,33 +76,19 @@ github_token() {
   gh auth token --hostname github.com
 }
 
-# --- Clone -------------------------------------------------------------------
+# --- Auth --------------------------------------------------------------------
 
 token=""
-if [[ -d $dir/.git ]]; then
-  log "$dir already exists, skipping clone"
-elif [[ -e $dir && -n $(ls -A "$dir") ]]; then
-  die "$dir exists and is not an empty directory"
-else
-  clone_url="$url"
-  if ! can_read "$url"; then
-    [[ -n $github_slug ]] || die "cannot read $url"
-    token=$(github_token)
-    clone_url="https://oauth2:${token}@github.com/${github_slug}.git"
-    can_read "$clone_url" || die "authenticated, but still cannot read $github_slug"
-  fi
-
-  clone_args=()
-  [[ -z $branch ]] || clone_args+=(--branch "$branch")
-  log "Cloning $repo into $dir"
-  git clone "${clone_args[@]}" "$clone_url" "$dir"
-  # Never persist the token in .git/config.
-  git -C "$dir" remote set-url origin "$url"
+if [[ -n $github_slug ]] && ! can_read "https://github.com/$github_slug.git"; then
+  token=$(github_token)
+  can_read "https://oauth2:${token}@github.com/${github_slug}.git" \
+    || die "authenticated, but still cannot read $github_slug"
 fi
 
 # --- Apply -------------------------------------------------------------------
 
 # Child nix invocations don't inherit the caller's --extra-experimental-features.
+# The token lets nix fetch a private github: flake.
 NIX_CONFIG="${NIX_CONFIG:+$NIX_CONFIG$'\n'}extra-experimental-features = nix-command flakes"
 [[ -z $token ]] || NIX_CONFIG+=$'\n'"access-tokens = github.com=$token"
 export NIX_CONFIG
@@ -116,11 +104,11 @@ eval_err=$(mktemp)
 trap 'rm -f "$eval_err"' EXIT
 has_output() {
   local result
-  if ! result=$(nix eval "${flake_args[@]}" --raw "$dir#$1" \
+  if ! result=$(nix eval "${flake_args[@]}" --raw "$flake#$1" \
       --apply "c: if builtins.hasAttr \"$host\" c then \"yes\" else \"no\"" 2>"$eval_err"); then
     grep -q "does not provide attribute" "$eval_err" && return 1
     cat "$eval_err" >&2
-    die "failed to evaluate the flake in $dir"
+    die "failed to evaluate $flake"
   fi
   [[ $result == yes ]]
 }
@@ -133,11 +121,10 @@ if [[ -e /etc/NIXOS ]] && has_output nixosConfigurations; then
   # user's systemd manager, often not running yet on a fresh WSL boot) failed
   # to reload; a restart fixes it, so keep going.
   status=0
-  nixos-rebuild switch --sudo --flake "$dir#$host" "${flake_args[@]}" || status=$?
+  nixos-rebuild switch --sudo --flake "$flake#$host" "${flake_args[@]}" || status=$?
   case $status in
     0) ;;
-    4) printf '\033[1;33mwarning:\033[0m %s\n' \
-        "NixOS configuration activated, but some units failed to reload (restart to fix)" >&2 ;;
+    4) warn "NixOS configuration activated, but some units failed to reload (restart to fix)" ;;
     *) exit "$status" ;;
   esac
   applied=1
@@ -146,12 +133,12 @@ fi
 if has_output homeConfigurations; then
   log "Applying home-manager configuration '$host'"
   activation=$(nix build "${flake_args[@]}" --no-link --print-out-paths \
-    "$dir#homeConfigurations.\"$host\".activationPackage")
+    "$flake#homeConfigurations.\"$host\".activationPackage")
   HOME_MANAGER_BACKUP_EXT=backup "$activation/activate"
   applied=1
 fi
 
-[[ $applied -eq 1 ]] || die "no nixosConfigurations.$host or homeConfigurations.$host in $dir"
+[[ $applied -eq 1 ]] || die "no nixosConfigurations.$host or homeConfigurations.$host in $flake"
 
 log "Bootstrap complete"
 if [[ -n ${WSL_DISTRO_NAME:-} ]]; then

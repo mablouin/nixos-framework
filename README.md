@@ -16,13 +16,14 @@ This will:
 
 1. Log in to GitHub (device flow) if the config repo is private and `gh` is
    not already authenticated (`GH_TOKEN` is honored)
-2. Clone the config repo into `~/.nixos-config` (use `--dir` to change it)
-3. Apply `nixosConfigurations.<host>` with `nixos-rebuild switch`
-4. Activate `homeConfigurations.<host>` (conflicting files get a `.backup`
+2. Apply `nixosConfigurations.<host>` with `nixos-rebuild switch`
+3. Activate `homeConfigurations.<host>` (conflicting files get a `.backup`
    suffix)
 
-`<owner/config-repo>` can also be a full git URL or a local path. Run with
-`--help` for all options.
+Both are built straight from `github:<owner/config-repo>`; nothing is cloned.
+To get local checkouts to edit and switch from, list them in
+`framework.checkouts` (see below). `<owner/config-repo>` can also be any flake
+ref, such as `path:/some/checkout`. Run with `--help` for all options.
 
 ## Using it from a config repo
 
@@ -69,19 +70,40 @@ Every module receives:
 
 A host without `nixos` only gets a home-manager config.
 
+### Checkouts
+
+`framework.checkouts` clones repos into one directory (relative to home) on
+home-manager activation when they're missing. Each clone URL lands in a
+folder named after its last segment (without `.git`). Existing folders are
+left alone, and a failed clone only warns. Private GitHub repos use `gh`'s
+login, which the bootstrap sets up:
+
+```nix
+{
+  framework.checkouts = {
+    dir = "git";
+    repos = [
+      "https://github.com/me/nixos-config.git"
+      "https://github.com/mablouin/nixos-framework.git"
+    ];
+  };
+}
+```
+
 ## Testing framework changes
 
 Point the config at a local checkout or a branch with `--override-input`. It
 implies `--no-write-lock-file`, so `flake.nix` and `flake.lock` stay untouched:
 
 ```sh
-nixos-rebuild switch --sudo --flake ~/.nixos-config#<host> \
+nixos-rebuild switch --sudo --flake ~/git/nixos-config#<host> \
   --override-input framework path:$HOME/git/nixos-framework
 ```
 
 `path:` includes uncommitted and untracked files. Use
 `github:mablouin/nixos-framework/<branch>` to test a pushed branch instead.
-The bootstrap takes the same thing as `--framework <flake-ref>`.
+The bootstrap takes the same thing as `--framework <flake-ref>`, and a
+`path:` config ref to test an uncommitted config.
 
 To test from another WSL distro, share the checkout through `/mnt/wsl`, which
 all WSL 2 distros see:
@@ -101,7 +123,8 @@ Then use `path:/mnt/wsl/dev/nixos-framework` from the test distro.
 ├── lib/mk-hosts.nix       # Host files → flake outputs
 ├── modules/
 │   ├── nixos-base.nix     # Always applied: host, user, nix, git, zsh
-│   └── home-base.nix      # Always applied: home-manager basics, zsh
+│   ├── home-base.nix      # Always applied: home-manager basics, zsh
+│   └── home-checkouts.nix # framework.checkouts option
 └── profiles/
     └── wsl.nix            # Opt-in as nixosModules.wsl
 ```

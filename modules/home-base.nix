@@ -2,6 +2,8 @@
 { host, ... }:
 
 {
+  imports = [ ./home-checkouts.nix ];
+
   home.username = host.user;
   home.homeDirectory = "/home/${host.user}";
 

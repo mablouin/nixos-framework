@@ -1,9 +1,7 @@
-# Opt-in profile for NixOS-WSL hosts. Needs a `nixos-wsl` flake input.
-{ inputs, host, ... }:
+# Opt-in profile for NixOS-WSL hosts, exported as `nixosModules.wsl`.
+{ host, ... }:
 
 {
-  imports = [ inputs.nixos-wsl.nixosModules.wsl ];
-
   wsl.enable = true;
   wsl.defaultUser = host.user;
 }

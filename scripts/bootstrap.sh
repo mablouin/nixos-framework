@@ -15,6 +15,10 @@ Arguments:
 Options:
   -b, --branch <name>  Branch to clone (default: the repo's default branch)
   -d, --dir <path>     Clone destination (default: ~/.nixos-config)
+  -f, --framework <flake-ref>
+                       Use this framework instead of the config's locked one,
+                       e.g. path:/home/me/git/nixos-framework or
+                       github:${FRAMEWORK_REPO}/<branch> (lock file untouched)
   -h, --help           Show this help
 USAGE
 }
@@ -24,11 +28,13 @@ die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 branch=""
 dir="$HOME/.nixos-config"
+framework=""
 positional=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -b|--branch) branch="${2:?--branch requires a value}"; shift 2 ;;
     -d|--dir) dir="${2:?--dir requires a value}"; shift 2 ;;
+    -f|--framework) framework="${2:?--framework requires a value}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     -*) usage >&2; die "unknown option: $1" ;;
     *) positional+=("$1"); shift ;;
@@ -50,6 +56,24 @@ esac
 
 can_read() { GIT_TERMINAL_PROMPT=0 git ls-remote "$1" HEAD >/dev/null 2>&1; }
 
+# Prints a GitHub token, logging in with the device flow if needed. Honors
+# GH_TOKEN. The login is saved to ~/.config/gh so gh stays authenticated
+# after the bootstrap.
+github_token() {
+  if ! gh auth status --hostname github.com >/dev/null 2>&1; then
+    log "Log in to GitHub to access $github_slug" >&2
+    # On WSL, open the device page in the Windows browser while gh prints the code.
+    if [[ -n ${WSL_DISTRO_NAME:-} ]] && command -v explorer.exe >/dev/null; then
+      explorer.exe "https://github.com/login/device" >/dev/null 2>&1 || true
+    fi
+    # Prompts disabled: gh would otherwise offer to install itself as git's
+    # credential helper, pointing at this ephemeral store path.
+    GH_PROMPT_DISABLED=1 gh auth login --hostname github.com --git-protocol https \
+      --web --insecure-storage </dev/null >&2 || die "GitHub login failed"
+  fi
+  gh auth token --hostname github.com
+}
+
 # --- Clone -------------------------------------------------------------------
 
 token=""
@@ -61,9 +85,7 @@ else
   clone_url="$url"
   if ! can_read "$url"; then
     [[ -n $github_slug ]] || die "cannot read $url"
-    # TODO: interactive GitHub device-flow login (next milestone step).
-    token=$(gh auth token --hostname github.com 2>/dev/null) \
-      || die "cannot read $github_slug anonymously; set GH_TOKEN or run 'gh auth login' first"
+    token=$(github_token)
     clone_url="https://oauth2:${token}@github.com/${github_slug}.git"
     can_read "$clone_url" || die "authenticated, but still cannot read $github_slug"
   fi
@@ -76,11 +98,6 @@ else
   git -C "$dir" remote set-url origin "$url"
 fi
 
-# The framework is vendored as a git subtree; add its remote for subtree pull/push.
-if [[ -d $dir/framework ]] && ! git -C "$dir" remote get-url framework >/dev/null 2>&1; then
-  git -C "$dir" remote add framework "https://github.com/$FRAMEWORK_REPO.git"
-fi
-
 # --- Apply -------------------------------------------------------------------
 
 # Child nix invocations don't inherit the caller's --extra-experimental-features.
@@ -88,9 +105,24 @@ NIX_CONFIG="${NIX_CONFIG:+$NIX_CONFIG$'\n'}extra-experimental-features = nix-com
 [[ -z $token ]] || NIX_CONFIG+=$'\n'"access-tokens = github.com=$token"
 export NIX_CONFIG
 
+# Flags added to every flake evaluation. --override-input implies
+# --no-write-lock-file, so testing another framework never touches flake.lock.
+flake_args=()
+[[ -z $framework ]] || flake_args+=(--override-input framework "$framework")
+
+# True if the flake has <output>.<host>. A flake without <output> at all is
+# fine; any other evaluation error is fatal.
+eval_err=$(mktemp)
+trap 'rm -f "$eval_err"' EXIT
 has_output() {
-  [[ $(nix eval --raw "$dir#$1" \
-    --apply "c: if builtins.hasAttr \"$host\" c then \"yes\" else \"no\"" 2>/dev/null) == yes ]]
+  local result
+  if ! result=$(nix eval "${flake_args[@]}" --raw "$dir#$1" \
+      --apply "c: if builtins.hasAttr \"$host\" c then \"yes\" else \"no\"" 2>"$eval_err"); then
+    grep -q "does not provide attribute" "$eval_err" && return 1
+    cat "$eval_err" >&2
+    die "failed to evaluate the flake in $dir"
+  fi
+  [[ $result == yes ]]
 }
 
 applied=0
@@ -101,7 +133,7 @@ if [[ -e /etc/NIXOS ]] && has_output nixosConfigurations; then
   # user's systemd manager, often not running yet on a fresh WSL boot) failed
   # to reload; a restart fixes it, so keep going.
   status=0
-  nixos-rebuild switch --sudo --flake "$dir#$host" || status=$?
+  nixos-rebuild switch --sudo --flake "$dir#$host" "${flake_args[@]}" || status=$?
   case $status in
     0) ;;
     4) printf '\033[1;33mwarning:\033[0m %s\n' \
@@ -113,7 +145,7 @@ fi
 
 if has_output homeConfigurations; then
   log "Applying home-manager configuration '$host'"
-  activation=$(nix build --no-link --print-out-paths \
+  activation=$(nix build "${flake_args[@]}" --no-link --print-out-paths \
     "$dir#homeConfigurations.\"$host\".activationPackage")
   HOME_MANAGER_BACKUP_EXT=backup "$activation/activate"
   applied=1

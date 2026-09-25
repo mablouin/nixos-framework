@@ -3,16 +3,17 @@
 #
 #   { system, user, nixos ? <module>, home ? <module> }
 #
-# `system`, `user` and `name` are passed to every module as `host`. A host
+# `system`, `user` and `name` are passed to every module as `host`, along with
+# `framework` (this flake) and `inputs` (the calling flake's inputs). A host
 # without `nixos` only gets a home-manager config.
-#
-# `inputs` must provide nixpkgs, nixpkgs-unstable and home-manager (plus
-# nixos-wsl for hosts using profiles/wsl.nix).
-{ inputs, hostsDir, nixosModulesDir ? null, homeModulesDir ? null }:
+{ framework, inputs }:
+
+{ hostsDir, nixosModulesDir ? null, homeModulesDir ? null, inputs ? { } }:
 
 let
-  inherit (inputs) nixpkgs nixpkgs-unstable home-manager;
+  inherit (framework.inputs) nixpkgs nixpkgs-unstable home-manager;
   inherit (nixpkgs) lib;
+  configInputs = inputs;
 
   nixFilesIn = dir:
     lib.optionals (dir != null)
@@ -32,7 +33,8 @@ let
   };
 
   specialArgsFor = host: {
-    inherit inputs host;
+    inherit framework host;
+    inputs = configInputs;
     pkgs-unstable = importPkgs nixpkgs-unstable host;
   };
 in {

@@ -22,7 +22,7 @@ This will:
 
 Both are built straight from `github:<owner/config-repo>`; nothing is cloned.
 To get local checkouts to edit and switch from, list them in
-`framework.checkouts` (see below). `<owner/config-repo>` can also be any flake
+`framework.checkouts`. `<owner/config-repo>` can also be any flake
 ref, such as `path:/some/checkout`. Run with `--help` for all options.
 
 ## Using it from a config repo
@@ -70,25 +70,8 @@ Every module receives:
 
 A host without `nixos` only gets a home-manager config.
 
-### Checkouts
-
-`framework.checkouts` clones repos into one directory (relative to home) on
-home-manager activation when they're missing. Each clone URL lands in a
-folder named after its last segment (without `.git`). Existing folders are
-left alone, and a failed clone only warns. Private GitHub repos use `gh`'s
-login, which the bootstrap sets up:
-
-```nix
-{
-  framework.checkouts = {
-    dir = "git";
-    repos = [
-      "https://github.com/me/nixos-config.git"
-      "https://github.com/mablouin/nixos-framework.git"
-    ];
-  };
-}
-```
+Modules under `modules/` are imported for every host and document their
+options in the module itself; `profiles/` are opt-in.
 
 ## Testing framework changes
 
@@ -113,18 +96,3 @@ sudo mkdir -p /mnt/wsl/dev && sudo mount --bind ~/git /mnt/wsl/dev
 ```
 
 Then use `path:/mnt/wsl/dev/nixos-framework` from the test distro.
-
-## Layout
-
-```text
-.
-├── flake.nix              # Inputs, lib.mkHosts, nixosModules, bootstrap app
-├── scripts/bootstrap.sh
-├── lib/mk-hosts.nix       # Host files → flake outputs
-├── modules/
-│   ├── nixos-base.nix     # Always applied: host, user, nix, git, zsh
-│   ├── home-base.nix      # Always applied: home-manager basics, zsh
-│   └── home-checkouts.nix # framework.checkouts option
-└── profiles/
-    └── wsl.nix            # Opt-in as nixosModules.wsl
-```

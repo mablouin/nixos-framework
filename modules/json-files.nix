@@ -15,23 +15,26 @@ let
     text = ''
       target=$1 declared=$2 state=$3
 
-      current='{}'
+      # Missing files read as /dev/null, which slurps to [] (then {} below).
+      # Files are slurped rather than passed as arguments, which are capped
+      # at 128 KiB each.
+      current=/dev/null
       if [[ -e $target ]]; then
         if ! jq -e 'type == "object"' "$target" >/dev/null 2>&1; then
           echo "warning: $target is not a JSON object, leaving it alone" >&2
           exit 0
         fi
-        current=$(<"$target")
+        current=$target
       fi
-      previous='{}'
-      [[ -e $state ]] && previous=$(<"$state")
+      previous=/dev/null
+      [[ -e $state ]] && previous=$state
 
       mkdir -p "$(dirname "$target")" "$(dirname "$state")"
       tmp=$(mktemp "$target.XXXXXX")
       # Objects merge recursively; any other value (arrays included) replaces.
-      jq -n --argjson current "$current" --argjson previous "$previous" \
+      jq -n --slurpfile current "$current" --slurpfile previous "$previous" \
         --slurpfile declared "$declared" '
-          reduce ($previous | paths(type != "object")) as $path ($current;
+          reduce (($previous[0] // {}) | paths(type != "object")) as $path ($current[0] // {};
             . as $acc | try delpaths([$path]) catch $acc)
           * $declared[0]
         ' >"$tmp"
@@ -41,7 +44,9 @@ let
         chmod 600 "$tmp"
       fi
       mv "$tmp" "$target"
-      cp "$declared" "$state"
+      # Not cp: it would copy the store file's read-only mode, and the next
+      # activation couldn't overwrite the state. install replaces the file.
+      install -m 644 "$declared" "$state"
     '';
   };
 

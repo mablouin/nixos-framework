@@ -2,7 +2,7 @@
 { host, ... }:
 
 {
-  imports = [ ./checkouts.nix ./json-files.nix ./static-files.nix ./claude-code.nix ./nixos-aliases.nix ];
+  imports = [ ./checkouts.nix ./json-files.nix ./static-files.nix ./claude-code.nix ./opencode.nix ./nixos-aliases.nix ];
 
   home.username = host.user;
   home.homeDirectory = "/home/${host.user}";

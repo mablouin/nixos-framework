@@ -8,6 +8,9 @@
 #   locked framework instead, to check what the lock alone produces.
 # - nixos-switch-main / home-switch-main: the repo's main branch (github:)
 #   with its locked framework, i.e. what's actually pushed.
+# - home-update: refresh and update the config flake's complete input graph
+#   (including the framework's nixpkgs and nixpkgs-unstable inputs), apply the
+#   home config, then collect garbage if both earlier steps succeed.
 { config, lib, host, ... }:
 
 let
@@ -39,8 +42,8 @@ in
       example = "nixos-config";
       description = ''
         Name of the config repo checkout (one of `framework.checkouts.repos`,
-        cloned under `framework.checkouts.dir`) that `nixos-switch` /
-        `home-switch` switch from. Empty disables these functions.
+        cloned under `framework.checkouts.dir`) that the switch and update
+        functions use. Empty disables these functions.
       '';
     };
     frameworkDir = lib.mkOption {
@@ -79,6 +82,21 @@ in
         local args=(--flake "path:${localConfig}#${cfg.host}")
         [[ -z "$NIXOS_FRAMEWORK_LOCKED" ]] && args+=(--override-input framework "path:${localFramework}")
         home-manager switch -b backup ''${args[@]}
+      }
+
+      home-update() {
+        (
+          cd "${localConfig}" || exit
+          nix flake update --refresh \
+            framework \
+            framework/nixpkgs \
+            framework/nixpkgs-unstable \
+            framework/home-manager \
+            framework/nixos-wsl \
+            framework/nixos-wsl/flake-compat &&
+            home-manager switch -b backup --flake ".#${cfg.host}" &&
+            nix-collect-garbage -d
+        )
       }
 
       nixos-switch-main() {

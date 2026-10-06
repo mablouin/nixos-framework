@@ -24,6 +24,7 @@
       nixosModules.wsl = {
         imports = [ nixos-wsl.nixosModules.wsl ./profiles/wsl.nix ];
       };
+      nixosModules.docker = ./profiles/docker.nix;
 
       packages.${system} = {
         bootstrap = pkgs.writeShellApplication {

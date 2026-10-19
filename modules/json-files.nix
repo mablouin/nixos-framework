@@ -32,10 +32,16 @@ let
       mkdir -p "$(dirname "$target")" "$(dirname "$state")"
       tmp=$(mktemp "$target.XXXXXX")
       # Objects merge recursively; any other value (arrays included) replaces.
+      # Removing a key also removes the parents it leaves empty, which would
+      # otherwise linger as {} and can be invalid for the app.
       jq -n --slurpfile current "$current" --slurpfile previous "$previous" \
         --slurpfile declared "$declared" '
+          def prune($path):
+            if ($path | length) > 1 and getpath($path[:-1]) == {}
+            then delpaths([$path[:-1]]) | prune($path[:-1])
+            else . end;
           reduce (($previous[0] // {}) | paths(type != "object")) as $path ($current[0] // {};
-            . as $acc | try delpaths([$path]) catch $acc)
+            . as $acc | try (delpaths([$path]) | prune($path)) catch $acc)
           * $declared[0]
         ' >"$tmp"
       if [[ -e $target ]]; then
